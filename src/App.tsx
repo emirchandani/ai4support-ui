@@ -1,19 +1,31 @@
+import { Route, Routes } from "react-router-dom";
+import ProtectedRoute from "./components/ProtectedRoute";
+import AdminDashboard from "./pages/AdminDashboard";
+import Login from "./pages/Login";
+import UserChat from "./pages/UserChat";
+
 export default function App() {
   return (
-    <div className="min-h-screen bg-ai-bg text-ai-text flex items-center justify-center">
-      <div className="bg-ai-panel rounded-2xl p-10 border border-white/10 shadow-lg max-w-xl w-full">
-        <h1 className="text-4xl font-bold">
-          Ai4Support <span className="text-ai-gold">UI</span>
-        </h1>
+    <Routes>
+      <Route path="/" element={<Login />} />
 
-        <p className="text-ai-muted mt-3">
-          Tailwind is installed and the Ai4Support theme is active.
-        </p>
+      <Route
+        path="/user"
+        element={
+          <ProtectedRoute requiredRole="user">
+            <UserChat />
+          </ProtectedRoute>
+        }
+      />
 
-        <button className="mt-6 bg-ai-gold text-black font-semibold px-6 py-3 rounded-xl hover:opacity-90 transition">
-          Continue
-        </button>
-      </div>
-    </div>
+      <Route
+        path="/admin"
+        element={
+          <ProtectedRoute requiredRole="admin">
+            <AdminDashboard />
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
   );
 }

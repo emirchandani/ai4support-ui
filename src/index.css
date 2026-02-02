@@ -1,3 +1,52 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+}
+
+@layer components {
+  /* Solid background to match Ai4Support theme closely */
+  .ai-page-bg {
+    @apply min-h-screen bg-ai-bg text-ai-text;
+  }
+
+  /* Card with subtle depth */
+  .ai-card {
+    @apply bg-ai-panel/80 backdrop-blur border border-white/10 rounded-2xl shadow-lg;
+  }
+
+  /* Section/workspace panels */
+  .ai-panel {
+    @apply bg-ai-panel/70 border border-white/10 rounded-2xl shadow-md;
+  }
+
+  /* Inputs */
+  .ai-input {
+    @apply w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 text-ai-text placeholder:text-ai-muted
+           focus:outline-none focus:ring-2 focus:ring-ai-gold/40 focus:border-ai-gold/40 transition;
+  }
+
+  /* Buttons */
+  .ai-btn-primary {
+    @apply inline-flex items-center justify-center rounded-xl bg-ai-gold text-black font-semibold
+           px-5 py-3 shadow-md shadow-black/20 transition
+           hover:brightness-105 hover:shadow-lg hover:shadow-black/30 active:scale-[0.98];
+  }
+
+  .ai-btn-secondary {
+    @apply inline-flex items-center justify-center rounded-xl bg-white/5 text-ai-text font-semibold
+           px-5 py-3 border border-white/10 transition
+           hover:bg-white/10 active:scale-[0.99];
+  }
+
+  /* Optional bubble style */
+  .ai-bubble {
+    @apply rounded-2xl bg-white/5 border border-white/10 px-4 py-3;
+  }
+}
