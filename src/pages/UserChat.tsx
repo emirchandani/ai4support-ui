@@ -7,25 +7,30 @@ export default function UserChat() {
 
   const logout = () => {
     clearAuth();
-    navigate("/", { replace: true });
+    navigate("/");
   };
 
   return (
-    <div className="ai-page-bg p-6">
-      <header className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-semibold tracking-tight">
-          Ai4Support <span className="text-ai-gold">User Chat</span>
+    <div className="h-screen flex flex-col bg-ai-bg text-ai-text">
+      {/* Header */}
+      <header className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+        <h1 className="text-lg font-semibold">
+          Ai4Support <span className="text-ai-gold">User</span>
         </h1>
-
-        <button onClick={logout} className="text-ai-gold hover:opacity-80">
+        <button
+          onClick={logout}
+          className="text-sm text-ai-gold hover:underline"
+        >
           Logout
         </button>
       </header>
 
-      {/* Full-height workspace panel like Admin (minus upload column) */}
-      <div className="ai-panel h-[calc(100vh-120px)] p-4">
-        <ChatPanel />
-      </div>
+      {/* Chat only */}
+      <main className="flex-1 p-4 overflow-hidden">
+        <div className="h-full rounded-xl bg-ai-panel p-4 overflow-hidden">
+          <ChatPanel />
+        </div>
+      </main>
     </div>
   );
 }

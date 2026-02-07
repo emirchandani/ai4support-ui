@@ -1,45 +1,89 @@
-import { useState } from "react";
+import { Download, Eye } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+
+type DocItem = {
+  id: string;
+  name: string;
+  url: string;
+};
 
 export default function DocumentPanel() {
-  const [files, setFiles] = useState<File[]>([]);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [docs, setDocs] = useState<DocItem[]>([]);
 
-  const onUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files) return;
-    setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
+  const sortedDocs = useMemo(() => {
+    return [...docs].sort((a, b) => a.name.localeCompare(b.name));
+  }, [docs]);
+
+  const handlePickFiles = () => inputRef.current?.click();
+
+  const handleFilesChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+
+    const newDocs: DocItem[] = files.map((f) => ({
+      id: crypto.randomUUID(),
+      name: f.name,
+      url: URL.createObjectURL(f),
+    }));
+
+    setDocs((prev) => [...prev, ...newDocs]);
+    e.target.value = "";
+  };
+
+  const handleView = (doc: DocItem) => {
+    window.open(doc.url, "_blank", "noopener,noreferrer");
+  };
+
+  const handleDownload = (doc: DocItem) => {
+    const a = document.createElement("a");
+    a.href = doc.url;
+    a.download = doc.name;
+    a.click();
   };
 
   return (
-    <div className="bg-ai-panel border border-white/10 rounded-xl p-4 flex flex-col h-full">
-      <h2 className="font-semibold text-lg mb-3">Knowledge Base</h2>
+    // ✅ Outer panel locked
+    <div className="ai-panel h-full min-h-0 overflow-hidden flex flex-col">
+      <div className="flex items-center justify-between">
+        <div className="text-xl font-semibold">Knowledge Base</div>
 
-      <label className="cursor-pointer inline-block">
+        <button className="ai-btn-primary" onClick={handlePickFiles}>
+          Upload documents
+        </button>
+
         <input
+          ref={inputRef}
           type="file"
           multiple
           className="hidden"
-          onChange={onUpload}
+          onChange={handleFilesChosen}
         />
-        <div className="bg-ai-gold text-black text-sm font-medium px-4 py-2 rounded-lg hover:opacity-90 inline-block">
-          Upload documents
-        </div>
-      </label>
+      </div>
 
-      <div className="mt-4 flex-1 overflow-y-auto">
-        {files.length === 0 ? (
-          <p className="text-sm text-ai-muted">
-            No documents uploaded yet.
-          </p>
+      {/* ✅ Only list scrolls */}
+      <div className="mt-6 flex-1 min-h-0 overflow-y-auto pr-2 space-y-4">
+        {sortedDocs.length === 0 ? (
+          <div className="text-ai-muted text-sm">No documents uploaded yet.</div>
         ) : (
-          <ul className="space-y-2">
-            {files.map((file, i) => (
-              <li
-                key={i}
-                className="text-sm bg-white/5 border border-white/10 rounded-lg px-3 py-2"
-              >
-                {file.name}
-              </li>
-            ))}
-          </ul>
+          sortedDocs.map((doc) => (
+            <div
+              key={doc.id}
+              className="ai-doc-row flex items-center justify-between gap-3"
+            >
+              <div className="truncate">{doc.name}</div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button className="ai-icon-btn" onClick={() => handleView(doc)} title="Quick view">
+                  <Eye className="h-5 w-5 text-ai-gold" />
+                </button>
+
+                <button className="ai-icon-btn" onClick={() => handleDownload(doc)} title="Download">
+                  <Download className="h-5 w-5 text-ai-gold" />
+                </button>
+              </div>
+            </div>
+          ))
         )}
       </div>
     </div>

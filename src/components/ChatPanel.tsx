@@ -1,64 +1,118 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-type Message = {
-  role: "user" | "assistant";
-  content: string;
+type ChatMessage = {
+  id: string;
+  role: "system" | "user";
+  text: string;
 };
 
-export default function ChatPanel() {
-  const [messages, setMessages] = useState<Message[]>([
+type Props = {
+  title?: string;
+  showLogout?: boolean;
+  onLogout?: () => void;
+};
+
+export default function ChatPanel({
+  title = "Chat",
+  showLogout = false,
+  onLogout,
+}: Props) {
+  const [messages, setMessages] = useState<ChatMessage[]>([
     {
-      role: "assistant",
-      content: "Hi! How can I help you today?",
+      id: "m0",
+      role: "system",
+      text: "Hi! How can I help you today?",
     },
   ]);
-  const [input, setInput] = useState("");
+  const [draft, setDraft] = useState("");
 
-  const sendMessage = () => {
-    if (!input.trim()) return;
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  const canSend = useMemo(() => draft.trim().length > 0, [draft]);
+
+  // Auto-scroll to newest message
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({
+      behavior: messages.length <= 1 ? "auto" : "smooth",
+    });
+  }, [messages.length]);
+
+  const send = () => {
+    if (!canSend) return;
+
+    const text = draft.trim();
+    setDraft("");
 
     setMessages((prev) => [
       ...prev,
-      { role: "user", content: input },
-      {
-        role: "assistant",
-        content: "This is a placeholder AI response.",
-      },
+      { id: `u-${Date.now()}`, role: "user", text },
     ]);
 
-    setInput("");
+    // UI-only fake assistant response
+    setTimeout(() => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `s-${Date.now()}`,
+          role: "system",
+          text: "Thanks — noted. (UI-only prototype)",
+        },
+      ]);
+    }, 250);
   };
 
   return (
-    <div className="flex flex-col h-full bg-ai-panel border border-white/10 rounded-xl">
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`max-w-[80%] px-4 py-2 rounded-xl text-sm ${
-              msg.role === "user"
-                ? "ml-auto bg-ai-gold text-black"
-                : "bg-white/10 text-ai-text"
-            }`}
+    <div className="ai-card h-full w-full p-6 flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-lg font-semibold">{title}</div>
+
+        {showLogout && (
+          <button
+            onClick={onLogout}
+            className="text-ai-gold text-sm hover:opacity-90"
           >
-            {msg.content}
-          </div>
-        ))}
+            Logout
+          </button>
+        )}
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 min-h-0 overflow-y-auto rounded-2xl bg-ai-panel/40 p-4">
+        <div className="space-y-3">
+          {messages.map((m) => (
+            <div key={m.id} className="w-full flex">
+              <div
+                className={[
+                  "max-w-[90%] rounded-xl px-4 py-3 text-sm",
+                  m.role === "user"
+                    ? "bg-ai-gold text-black"
+                    : "bg-ai-panel border border-white/10 text-ai-text",
+                ].join(" ")}
+              >
+                {m.text}
+              </div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
       {/* Input */}
-      <div className="border-t border-white/10 p-3 flex gap-2">
+      <div className="mt-4 flex items-center gap-3">
         <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          className="ai-input flex-1"
           placeholder="Type your message..."
-          className="flex-1 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm focus:outline-none"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") send();
+          }}
         />
         <button
-          onClick={sendMessage}
-          className="bg-ai-gold text-black px-4 rounded-lg font-medium hover:opacity-90"
+          className="ai-btn-primary"
+          onClick={send}
+          disabled={!canSend}
         >
           Send
         </button>
