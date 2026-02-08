@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { clearAuth } from "../auth";
 import ChatPanel from "../components/ChatPanel";
@@ -13,21 +13,86 @@ type Environment = {
   id: string;
   name: string;
   isOpen: boolean;
+  color: string;
+  assignedUsers: string[];
   docs: UploadedDoc[];
+  children: Environment[];
 };
 
-// --- Assign users (UI-only) ---
-type AssignedUsersMap = { [envId: string]: string[] };
-const DEMO_USERS = ["user@gmail.com", "user2@gmail.com", "user3@gmail.com"];
+const ENV_COLORS = [
+  "#F87171", // red
+  "#FBBF24", // amber
+  "#34D399", // emerald
+  "#60A5FA", // blue
+  "#A78BFA", // violet
+  "#22D3EE", // cyan
+  "#FB7185", // rose
+  "#F97316", // orange
+  "#84CC16", // lime
+];
+
+function makeDocId(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+}
+
+function pickNextColor(used: Set<string>) {
+  for (const c of ENV_COLORS) if (!used.has(c)) return c;
+  return ENV_COLORS[used.size % ENV_COLORS.length];
+}
+
+function collectUsedColors(envs: Environment[], out: Set<string>) {
+  for (const e of envs) {
+    out.add(e.color);
+    if (e.children.length) collectUsedColors(e.children, out);
+  }
+}
+
+function findEnvById(envs: Environment[], envId: string): Environment | null {
+  for (const env of envs) {
+    if (env.id === envId) return env;
+    const child = findEnvById(env.children, envId);
+    if (child) return child;
+  }
+  return null;
+}
+
+function updateEnvTree(
+  envs: Environment[],
+  envId: string,
+  updater: (env: Environment) => Environment
+): Environment[] {
+  return envs.map((env) => {
+    if (env.id === envId) return updater(env);
+    if (env.children.length === 0) return env;
+    return { ...env, children: updateEnvTree(env.children, envId, updater) };
+  });
+}
+
+function flattenEnvNodes(
+  envs: Environment[],
+  depth = 0
+): Array<{ env: Environment; depth: number }> {
+  const out: Array<{ env: Environment; depth: number }> = [];
+  for (const env of envs) {
+    out.push({ env, depth });
+    if (env.children.length > 0) out.push(...flattenEnvNodes(env.children, depth + 1));
+  }
+  return out;
+}
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
 
-  // Sidebar quick-upload input (existing behavior)
+  // Sidebar quick-upload input (used by "+" on envs)
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Modal upload input (Notion upload popup flow)
   const modalFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Assign users modal input
+  const assignInputRef = useRef<HTMLInputElement | null>(null);
 
   // Which environment is currently receiving sidebar "+" uploads
   const [targetEnvId, setTargetEnvId] = useState<string>("__default__");
@@ -36,17 +101,18 @@ export default function AdminDashboard() {
   const [defaultDocs, setDefaultDocs] = useState<UploadedDoc[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
 
-  // --- Notion upload modal state ---
+  // Upload modal state (Notion)
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadSelectedEnvIds, setUploadSelectedEnvIds] = useState<string[]>([]);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+
+  // Toast
   const [toast, setToast] = useState<string | null>(null);
 
-  // --- Assign users modal state (UI-only) ---
-  const [assignUsersOpen, setAssignUsersOpen] = useState(false);
+  // Assign users modal
+  const [assignOpen, setAssignOpen] = useState(false);
   const [assignEnvId, setAssignEnvId] = useState<string | null>(null);
-  const [assignedUsers, setAssignedUsers] = useState<AssignedUsersMap>({});
-  const [tempSelectedUsers, setTempSelectedUsers] = useState<string[]>([]);
+  const [assignUsersDraft, setAssignUsersDraft] = useState<string>("");
 
   const handleLogout = () => {
     clearAuth();
@@ -64,9 +130,7 @@ export default function AdminDashboard() {
     if (files.length === 0) return;
 
     const newDocs: UploadedDoc[] = files.map((file) => ({
-      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random()
-        .toString(16)
-        .slice(2)}`,
+      id: makeDocId(file),
       name: file.name,
       url: URL.createObjectURL(file),
     }));
@@ -75,11 +139,10 @@ export default function AdminDashboard() {
       setDefaultDocs((prev) => [...prev, ...newDocs]);
     } else {
       setEnvironments((prev) =>
-        prev.map((env) =>
-          env.id === targetEnvId
-            ? { ...env, docs: [...env.docs, ...newDocs] }
-            : env
-        )
+        updateEnvTree(prev, targetEnvId, (env) => ({
+          ...env,
+          docs: [...env.docs, ...newDocs],
+        }))
       );
     }
 
@@ -132,31 +195,70 @@ export default function AdminDashboard() {
   );
 
   // ===== Environments =====
+  const usedColors = useMemo(() => {
+    const used = new Set<string>();
+    collectUsedColors(environments, used);
+    return used;
+  }, [environments]);
+
   const handleAddEnvironment = () => {
     const name = window.prompt("Enter environment name:");
     const trimmed = (name ?? "").trim();
     if (!trimmed) return;
 
+    const color = pickNextColor(usedColors);
+
     const newEnv: Environment = {
       id: `env-${trimmed}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       name: trimmed,
       isOpen: true,
+      color,
+      assignedUsers: [],
       docs: [],
+      children: [],
     };
 
     setEnvironments((prev) => [newEnv, ...prev]);
   };
 
+  const handleAddChildEnvironment = (parentEnvId: string) => {
+    const name = window.prompt("Enter sub-environment name:");
+    const trimmed = (name ?? "").trim();
+    if (!trimmed) return;
+
+    // Global uniqueness across ALL envs
+    const allUsed = new Set<string>();
+    collectUsedColors(environments, allUsed);
+    const color = pickNextColor(allUsed);
+
+    const newChild: Environment = {
+      id: `env-${trimmed}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      name: trimmed,
+      isOpen: true,
+      color,
+      assignedUsers: [],
+      docs: [],
+      children: [],
+    };
+
+    setEnvironments((prev) =>
+      updateEnvTree(prev, parentEnvId, (env) => ({
+        ...env,
+        isOpen: true,
+        // ✅ sub-environments should stay ABOVE any files: prepend children
+        children: [newChild, ...env.children],
+      }))
+    );
+  };
+
   const toggleEnvironment = (envId: string) => {
     setEnvironments((prev) =>
-      prev.map((env) =>
-        env.id === envId ? { ...env, isOpen: !env.isOpen } : env
-      )
+      updateEnvTree(prev, envId, (env) => ({ ...env, isOpen: !env.isOpen }))
     );
   };
 
   // ============================================================
-  // ✅ Upload Documents Popup Flow (modal)
+  // ✅ Upload Documents Modal Flow (Notion)
   // ============================================================
   const openUploadModal = () => {
     setUploadOpen(true);
@@ -196,26 +298,26 @@ export default function AdminDashboard() {
     if (uploadSelectedEnvIds.length === 0 || uploadFiles.length === 0) return;
 
     const newDocs: UploadedDoc[] = uploadFiles.map((file) => ({
-      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random()
-        .toString(16)
-        .slice(2)}`,
+      id: makeDocId(file),
       name: file.name,
       url: URL.createObjectURL(file),
     }));
 
-    // Add docs to each selected environment
-    setEnvironments((prev) =>
-      prev.map((env) =>
-        uploadSelectedEnvIds.includes(env.id)
-          ? { ...env, docs: [...env.docs, ...newDocs] }
-          : env
-      )
-    );
+    // Add docs to each selected environment (including nested)
+    setEnvironments((prev) => {
+      let updated = prev;
+      for (const envId of uploadSelectedEnvIds) {
+        updated = updateEnvTree(updated, envId, (env) => ({
+          ...env,
+          docs: [...env.docs, ...newDocs],
+        }));
+      }
+      return updated;
+    });
 
-    // Bottom-right confirmation
-    const envNames = environments
-      .filter((e) => uploadSelectedEnvIds.includes(e.id))
-      .map((e) => e.name);
+    const envNames = uploadSelectedEnvIds
+      .map((id) => findEnvById(environments, id)?.name)
+      .filter(Boolean) as string[];
 
     const destinationText =
       envNames.length === 1
@@ -234,38 +336,144 @@ export default function AdminDashboard() {
   };
 
   // ============================================================
-  // ✅ Assign Users to Environment (UI-only)
+  // ✅ Assign Users
   // ============================================================
-  const openAssignUsers = (envId: string) => {
+  const handleAssignUsers = (envId: string) => {
+    const env = findEnvById(environments, envId);
     setAssignEnvId(envId);
-    setTempSelectedUsers(assignedUsers[envId] ?? []);
-    setAssignUsersOpen(true);
+    setAssignUsersDraft((env?.assignedUsers ?? []).join(", "));
+    setAssignOpen(true);
+    setTimeout(() => assignInputRef.current?.focus(), 0);
   };
 
-  const closeAssignUsers = () => {
-    setAssignUsersOpen(false);
+  const closeAssignModal = () => {
+    setAssignOpen(false);
     setAssignEnvId(null);
-    setTempSelectedUsers([]);
+    setAssignUsersDraft("");
   };
 
-  const toggleUser = (email: string) => {
-    setTempSelectedUsers((prev) =>
-      prev.includes(email) ? prev.filter((u) => u !== email) : [...prev, email]
+  const confirmAssignUsers = () => {
+    if (!assignEnvId) return;
+
+    const parsed = assignUsersDraft
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const unique = Array.from(new Set(parsed));
+
+    setEnvironments((prev) =>
+      updateEnvTree(prev, assignEnvId, (env) => ({
+        ...env,
+        assignedUsers: unique,
+      }))
+    );
+
+    const envName = findEnvById(environments, assignEnvId)?.name ?? "environment";
+    showToast(`Assigned users updated for "${envName}"`);
+    closeAssignModal();
+  };
+
+  // ============================================================
+  // ✅ Tree rendering (VSCode-like): indentation + always-visible nesting cues
+  //    - Sub-environments render ABOVE docs
+  //    - No shrinking cards: row stays full-width; indentation is internal padding
+  // ============================================================
+  const renderEnvironmentTree = (env: Environment, depth: number) => {
+    const indent = Math.min(depth * 18, 180);
+
+    return (
+      <div key={env.id} className="space-y-3">
+        <div
+          className="w-full bg-white/5 rounded-xl px-3 py-3 relative"
+          style={{ borderLeft: `4px solid ${env.color}` }}
+        >
+          {/* subtle vertical guide to make nesting obvious even when expanded */}
+          {depth > 0 && (
+            <div
+              className="absolute top-0 bottom-0 w-px bg-white/10"
+              style={{ left: 10 + indent }}
+            />
+          )}
+
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              className="flex items-center gap-2 min-w-0"
+              onClick={() => toggleEnvironment(env.id)}
+              title={env.isOpen ? "Collapse" : "Expand"}
+              style={{ paddingLeft: indent }}
+            >
+              <span className="text-yellow-500">{env.isOpen ? "▾" : "▸"}</span>
+              <span className="font-medium truncate">{env.name}</span>
+
+              {env.assignedUsers.length > 0 && (
+                <span className="ml-2 text-xs text-white/60 truncate">
+                  ({env.assignedUsers.length} assigned)
+                </span>
+              )}
+            </button>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleAssignUsers(env.id)}
+                className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+                aria-label="Assign users"
+                title="Assign users"
+              >
+                <span className="text-[#A78BFA] text-base">👥</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleAddChildEnvironment(env.id)}
+                className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+                aria-label="Add nested environment"
+                title="Add nested environment"
+              >
+                <span className="text-yellow-500 text-lg font-bold">⤴</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => openFilePickerFor(env.id)}
+                className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+                aria-label="Add files"
+                title="Add files"
+              >
+                <span className="text-yellow-500 text-lg font-bold">+</span>
+              </button>
+            </div>
+          </div>
+
+          {env.isOpen && (
+            <div className="mt-3 space-y-3">
+              {/* ✅ Children FIRST (always above docs) */}
+              {env.children.length > 0 && (
+                <div className="space-y-3">
+                  {env.children.map((child) => renderEnvironmentTree(child, depth + 1))}
+                </div>
+              )}
+
+              {/* Docs SECOND */}
+              {env.docs.length === 0 ? (
+                <div className="text-white/60 text-sm" style={{ paddingLeft: indent }}>
+                  No documents in this environment.
+                </div>
+              ) : (
+                <div className="space-y-3" style={{ paddingLeft: indent }}>
+                  {env.docs.map(renderDocRow)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     );
   };
 
-  const saveAssignedUsers = () => {
-    if (!assignEnvId) return;
-
-    setAssignedUsers((prev) => ({
-      ...prev,
-      [assignEnvId]: tempSelectedUsers,
-    }));
-
-    closeAssignUsers();
-  };
-
-  const assignedCountForEnv = (envId: string) => (assignedUsers[envId] ?? []).length;
+  const modalFlattened = useMemo(() => flattenEnvNodes(environments), [environments]);
 
   return (
     <div className="h-screen bg-[#1c2237] p-6 text-white">
@@ -276,7 +484,6 @@ export default function AdminDashboard() {
             Ai4Support <span className="text-yellow-500">Admin</span>
           </h1>
 
-          {/* Match user styling */}
           <button
             type="button"
             onClick={handleLogout}
@@ -312,7 +519,7 @@ export default function AdminDashboard() {
                 </button>
               </div>
 
-              {/* Hidden sidebar file input (for "+" uploads) */}
+              {/* Hidden sidebar file input */}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -335,66 +542,8 @@ export default function AdminDashboard() {
                 )}
               </div>
 
-              {/* Environments */}
-              {environments.map((env) => (
-                <div key={env.id} className="bg-white/5 rounded-xl px-3 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      className="flex items-center gap-2 min-w-0"
-                      onClick={() => toggleEnvironment(env.id)}
-                      title={env.isOpen ? "Collapse" : "Expand"}
-                    >
-                      <span className="text-yellow-500">
-                        {env.isOpen ? "▾" : "▸"}
-                      </span>
-                      <span className="font-medium truncate">{env.name}</span>
-                    </button>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      {/* 👥 assign users */}
-                      <button
-                        type="button"
-                        onClick={() => openAssignUsers(env.id)}
-                        className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
-                        aria-label="Assign users"
-                        title={
-                          assignedCountForEnv(env.id) > 0
-                            ? `Assign users (${assignedCountForEnv(env.id)} selected)`
-                            : "Assign users"
-                        }
-                      >
-                        <span className="text-yellow-500 text-base">👥</span>
-                      </button>
-
-                      {/* "+" upload into this environment */}
-                      <button
-                        type="button"
-                        onClick={() => openFilePickerFor(env.id)}
-                        className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
-                        aria-label="Add files"
-                        title="Add files"
-                      >
-                        <span className="text-yellow-500 text-lg font-bold">
-                          +
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {env.isOpen && (
-                    <div className="mt-3 space-y-3">
-                      {env.docs.length === 0 ? (
-                        <div className="text-white/60 text-sm">
-                          No documents in this environment.
-                        </div>
-                      ) : (
-                        env.docs.map(renderDocRow)
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
+              {/* Environments (recursive, nested cues, no shrinking) */}
+              {environments.map((env) => renderEnvironmentTree(env, 0))}
             </div>
           </div>
 
@@ -405,7 +554,7 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* ✅ Upload Documents Modal */}
+      {/* Upload Documents Modal */}
       {uploadOpen && (
         <div
           className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
@@ -438,10 +587,11 @@ export default function AdminDashboard() {
                   No environments yet. Click “Add environment” first.
                 </div>
               ) : (
-                environments.map((env) => (
+                modalFlattened.map(({ env, depth }) => (
                   <label
                     key={env.id}
                     className="flex items-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-3 cursor-pointer"
+                    style={{ paddingLeft: 16 + Math.min(depth * 14, 140) }}
                   >
                     <input
                       type="checkbox"
@@ -449,9 +599,7 @@ export default function AdminDashboard() {
                       onChange={() => toggleEnvSelected(env.id)}
                       className="h-4 w-4 accent-yellow-500"
                     />
-                    <span className="text-sm text-white/90 truncate">
-                      {env.name}
-                    </span>
+                    <span className="text-sm text-white/90 truncate">{env.name}</span>
                   </label>
                 ))
               )}
@@ -508,30 +656,26 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* ✅ Assign Users Modal */}
-      {assignUsersOpen && (
+      {/* Assign Users Modal */}
+      {assignOpen && (
         <div
           className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeAssignUsers();
+            if (e.target === e.currentTarget) closeAssignModal();
           }}
         >
-          <div className="w-full max-w-md rounded-2xl bg-[#222845] border border-white/10 p-6">
+          <div className="w-full max-w-xl rounded-2xl bg-[#222845] border border-white/10 p-6">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-lg font-semibold">Assign users</div>
                 <div className="text-sm text-white/70 mt-1">
-                  Environment:{" "}
-                  <span className="text-white/90">
-                    {environments.find((e) => e.id === assignEnvId)?.name ?? ""}
-                  </span>
+                  Enter users separated by commas.
                 </div>
               </div>
-
               <button
                 type="button"
                 className="text-white/60 hover:text-white"
-                onClick={closeAssignUsers}
+                onClick={closeAssignModal}
                 aria-label="Close"
                 title="Close"
               >
@@ -539,28 +683,24 @@ export default function AdminDashboard() {
               </button>
             </div>
 
-            <div className="mt-5 space-y-3 max-h-[280px] overflow-y-auto">
-              {DEMO_USERS.map((email) => (
-                <label
-                  key={email}
-                  className="flex items-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-3 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={tempSelectedUsers.includes(email)}
-                    onChange={() => toggleUser(email)}
-                    className="h-4 w-4 accent-yellow-500"
-                  />
-                  <span className="text-sm text-white/90">{email}</span>
-                </label>
-              ))}
+            <div className="mt-5">
+              <input
+                ref={assignInputRef}
+                value={assignUsersDraft}
+                onChange={(e) => setAssignUsersDraft(e.target.value)}
+                className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 text-sm outline-none focus:border-yellow-500/60"
+                placeholder="e.g., alice, bob, carol"
+              />
+              <div className="mt-2 text-xs text-white/60">
+                This is UI-only; no backend persistence yet.
+              </div>
             </div>
 
             <div className="mt-6 flex items-center justify-end gap-3">
               <button
                 type="button"
                 className="bg-white/5 hover:bg-white/10 text-white px-4 py-2 rounded-lg text-sm font-semibold border border-white/10"
-                onClick={closeAssignUsers}
+                onClick={closeAssignModal}
               >
                 Cancel
               </button>
@@ -568,7 +708,7 @@ export default function AdminDashboard() {
               <button
                 type="button"
                 className="bg-yellow-500 text-black px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-95"
-                onClick={saveAssignedUsers}
+                onClick={confirmAssignUsers}
               >
                 Save
               </button>
@@ -577,7 +717,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* ✅ Bottom-right toast confirmation */}
+      {/* Toast */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-[60] bg-[#222845] border border-white/10 text-white/90 rounded-xl px-4 py-3 shadow-lg max-w-[360px]">
           <div className="text-sm">{toast}</div>
