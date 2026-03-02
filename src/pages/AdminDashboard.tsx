@@ -9,14 +9,29 @@ type UploadedDoc = {
   url: string; // blob URL for view/download
 };
 
+type FSNode =
+  | {
+      id: string; // unique per env root
+      type: "folder";
+      name: string;
+      isOpen: boolean;
+      children: FSNode[];
+    }
+  | {
+      id: string; // unique per env root
+      type: "file";
+      name: string;
+      url: string;
+    };
+
 type Environment = {
   id: string;
   name: string;
   isOpen: boolean;
   color: string;
   assignedUsers: string[];
-  docs: UploadedDoc[];
-  children: Environment[];
+  children: Environment[]; // nested environments (your existing feature)
+  items: FSNode[]; // ✅ VSCode-like file tree INSIDE an environment
 };
 
 const ENV_COLORS = [
@@ -82,22 +97,127 @@ function flattenEnvNodes(
   return out;
 }
 
+// ---------- File Tree Helpers (inside an environment) ----------
+
+function cloneNodes(nodes: FSNode[]): FSNode[] {
+  return nodes.map((n) =>
+    n.type === "file"
+      ? { ...n }
+      : { ...n, children: cloneNodes(n.children) }
+  );
+}
+
+function sortNodes(nodes: FSNode[]) {
+  nodes.sort((a, b) => {
+    if (a.type !== b.type) return a.type === "folder" ? -1 : 1; // folders first
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
+  for (const n of nodes) if (n.type === "folder") sortNodes(n.children);
+}
+
+function findOrCreateFolder(parent: FSNode[], folderName: string, folderId: string) {
+  let existing = parent.find(
+    (n) => n.type === "folder" && n.name === folderName
+  ) as FSNode | undefined;
+
+  if (!existing) {
+    existing = {
+      id: folderId,
+      type: "folder",
+      name: folderName,
+      isOpen: true,
+      children: [],
+    };
+    parent.push(existing);
+  }
+  return existing as Extract<FSNode, { type: "folder" }>;
+}
+
+/**
+ * Merge folder upload files into an env's FSNode tree WITHOUT creating environments.
+ * Uses webkitRelativePath (e.g., "Cisc 101/A2 q1.py").
+ */
+function mergeFolderFilesIntoTree(existing: FSNode[], files: File[]) {
+  const root = cloneNodes(existing);
+
+  for (const file of files) {
+    const rel =
+      (file as any).webkitRelativePath ||
+      // fallback: treat as root file
+      file.name;
+
+    const parts = String(rel).split("/").filter(Boolean);
+    if (parts.length === 0) continue;
+
+    const fileName = parts[parts.length - 1];
+    const folderParts = parts.slice(0, -1);
+
+    let cursor = root;
+
+    // build folders
+    let pathAccum = "";
+    for (const folder of folderParts) {
+      pathAccum = pathAccum ? `${pathAccum}/${folder}` : folder;
+      const folderId = `folder:${pathAccum}`;
+      const folderNode = findOrCreateFolder(cursor, folder, folderId);
+      cursor = folderNode.children;
+    }
+
+    // add/replace file node (avoid duplicates by id)
+    const fileId = `file:${rel}`;
+    const existingIdx = cursor.findIndex((n) => n.id === fileId);
+    const newNode: FSNode = {
+      id: fileId,
+      type: "file",
+      name: fileName,
+      url: URL.createObjectURL(file),
+    };
+
+    if (existingIdx >= 0) cursor[existingIdx] = newNode;
+    else cursor.push(newNode);
+  }
+
+  sortNodes(root);
+  return root;
+}
+
+/** Add plain files to env root (not folder upload) */
+function addFilesToRoot(existing: FSNode[], files: File[]) {
+  const root = cloneNodes(existing);
+
+  for (const file of files) {
+    const fileId = `file:${file.name}:${file.size}:${file.lastModified}`;
+    root.push({
+      id: fileId,
+      type: "file",
+      name: file.name,
+      url: URL.createObjectURL(file),
+    });
+  }
+
+  sortNodes(root);
+  return root;
+}
+
 export default function AdminDashboard() {
   const navigate = useNavigate();
 
-  // Sidebar quick-upload input (used by "+" on envs)
+  // "+" and per-env upload-file buttons (plain files)
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Modal upload input (Notion upload popup flow)
+  // per-env upload-folder buttons (folder structure)
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Modal upload input (Notion flow: multi-env file upload)
   const modalFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Assign users modal input
   const assignInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Which environment is currently receiving sidebar "+" uploads
+  // Which environment is currently receiving uploads from sidebar buttons
   const [targetEnvId, setTargetEnvId] = useState<string>("__default__");
 
-  // Default docs + environments
+  // Default docs (top bucket stays as-is)
   const [defaultDocs, setDefaultDocs] = useState<UploadedDoc[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
 
@@ -119,29 +239,52 @@ export default function AdminDashboard() {
     navigate("/");
   };
 
-  // ===== Sidebar upload =====
+  // ===== Sidebar: open pickers =====
   const openFilePickerFor = (envId: string) => {
     setTargetEnvId(envId);
     fileInputRef.current?.click();
   };
 
+  const openFolderPickerFor = (envId: string) => {
+    setTargetEnvId(envId);
+    folderInputRef.current?.click();
+  };
+
+  // ===== Plain file uploads (adds files at env root; DOES NOT create envs) =====
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
 
-    const newDocs: UploadedDoc[] = files.map((file) => ({
-      id: makeDocId(file),
-      name: file.name,
-      url: URL.createObjectURL(file),
-    }));
-
     if (targetEnvId === "__default__") {
+      const newDocs: UploadedDoc[] = files.map((file) => ({
+        id: makeDocId(file),
+        name: file.name,
+        url: URL.createObjectURL(file),
+      }));
       setDefaultDocs((prev) => [...prev, ...newDocs]);
     } else {
       setEnvironments((prev) =>
         updateEnvTree(prev, targetEnvId, (env) => ({
           ...env,
-          docs: [...env.docs, ...newDocs],
+          items: addFilesToRoot(env.items, files),
+        }))
+      );
+    }
+
+    e.target.value = "";
+  };
+
+  // ===== Folder uploads (renders correct file structure inside env; DOES NOT create envs) =====
+  const handleFolderSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+
+    if (targetEnvId !== "__default__") {
+      setEnvironments((prev) =>
+        updateEnvTree(prev, targetEnvId, (env) => ({
+          ...env,
+          isOpen: true,
+          items: mergeFolderFilesIntoTree(env.items, files),
         }))
       );
     }
@@ -150,20 +293,20 @@ export default function AdminDashboard() {
   };
 
   // ===== View / Download =====
-  const handleView = (doc: UploadedDoc) => {
-    window.open(doc.url, "_blank", "noopener,noreferrer");
+  const handleView = (url: string) => {
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  const handleDownload = (doc: UploadedDoc) => {
+  const handleDownload = (name: string, url: string) => {
     const a = document.createElement("a");
-    a.href = doc.url;
-    a.download = doc.name;
+    a.href = url;
+    a.download = name;
     document.body.appendChild(a);
     a.click();
     a.remove();
   };
 
-  const renderDocRow = (doc: UploadedDoc) => (
+  const renderDefaultDocRow = (doc: UploadedDoc) => (
     <div
       key={doc.id}
       className="flex items-center justify-between gap-3 bg-white/5 rounded-xl px-3 py-3"
@@ -173,7 +316,7 @@ export default function AdminDashboard() {
       <div className="flex items-center gap-2 shrink-0">
         <button
           type="button"
-          onClick={() => handleView(doc)}
+          onClick={() => handleView(doc.url)}
           className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
           aria-label="View"
           title="View"
@@ -183,7 +326,7 @@ export default function AdminDashboard() {
 
         <button
           type="button"
-          onClick={() => handleDownload(doc)}
+          onClick={() => handleDownload(doc.name, doc.url)}
           className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
           aria-label="Download"
           title="Download"
@@ -214,8 +357,8 @@ export default function AdminDashboard() {
       isOpen: true,
       color,
       assignedUsers: [],
-      docs: [],
       children: [],
+      items: [],
     };
 
     setEnvironments((prev) => [newEnv, ...prev]);
@@ -226,7 +369,6 @@ export default function AdminDashboard() {
     const trimmed = (name ?? "").trim();
     if (!trimmed) return;
 
-    // Global uniqueness across ALL envs
     const allUsed = new Set<string>();
     collectUsedColors(environments, allUsed);
     const color = pickNextColor(allUsed);
@@ -237,15 +379,14 @@ export default function AdminDashboard() {
       isOpen: true,
       color,
       assignedUsers: [],
-      docs: [],
       children: [],
+      items: [],
     };
 
     setEnvironments((prev) =>
       updateEnvTree(prev, parentEnvId, (env) => ({
         ...env,
         isOpen: true,
-        // ✅ sub-environments should stay ABOVE any files: prepend children
         children: [newChild, ...env.children],
       }))
     );
@@ -257,9 +398,7 @@ export default function AdminDashboard() {
     );
   };
 
-  // ============================================================
-  // ✅ Upload Documents Modal Flow (Notion)
-  // ============================================================
+  // ===== Upload Documents Modal (Notion) =====
   const openUploadModal = () => {
     setUploadOpen(true);
     setUploadSelectedEnvIds([]);
@@ -297,19 +436,12 @@ export default function AdminDashboard() {
   const confirmModalUpload = () => {
     if (uploadSelectedEnvIds.length === 0 || uploadFiles.length === 0) return;
 
-    const newDocs: UploadedDoc[] = uploadFiles.map((file) => ({
-      id: makeDocId(file),
-      name: file.name,
-      url: URL.createObjectURL(file),
-    }));
-
-    // Add docs to each selected environment (including nested)
     setEnvironments((prev) => {
       let updated = prev;
       for (const envId of uploadSelectedEnvIds) {
         updated = updateEnvTree(updated, envId, (env) => ({
           ...env,
-          docs: [...env.docs, ...newDocs],
+          items: addFilesToRoot(env.items, uploadFiles),
         }));
       }
       return updated;
@@ -335,9 +467,7 @@ export default function AdminDashboard() {
     closeUploadModal();
   };
 
-  // ============================================================
-  // ✅ Assign Users
-  // ============================================================
+  // ===== Assign Users =====
   const handleAssignUsers = (envId: string) => {
     const env = findEnvById(environments, envId);
     setAssignEnvId(envId);
@@ -374,11 +504,100 @@ export default function AdminDashboard() {
     closeAssignModal();
   };
 
-  // ============================================================
-  // ✅ Tree rendering (VSCode-like): indentation + always-visible nesting cues
-  //    - Sub-environments render ABOVE docs
-  //    - No shrinking cards: row stays full-width; indentation is internal padding
-  // ============================================================
+  // ===== FS Tree Rendering (VSCode-like) =====
+
+  const toggleFolderInEnv = (envId: string, folderId: string) => {
+    const toggleInNodes = (nodes: FSNode[]): FSNode[] =>
+      nodes.map((n) => {
+        if (n.type === "folder") {
+          if (n.id === folderId) return { ...n, isOpen: !n.isOpen };
+          return { ...n, children: toggleInNodes(n.children) };
+        }
+        return n;
+      });
+
+    setEnvironments((prev) =>
+      updateEnvTree(prev, envId, (env) => ({
+        ...env,
+        items: toggleInNodes(env.items),
+      }))
+    );
+  };
+
+  const renderFSNode = (envId: string, node: FSNode, depth: number) => {
+    const indent = Math.min(depth * 18, 180);
+
+    if (node.type === "folder") {
+      return (
+        <div key={node.id} className="space-y-2">
+          <button
+            type="button"
+            className="w-full flex items-center gap-2 text-left text-white/90 hover:bg-white/5 rounded-lg px-2 py-2"
+            style={{ paddingLeft: 10 + indent }}
+            onClick={() => toggleFolderInEnv(envId, node.id)}
+            title={node.isOpen ? "Collapse" : "Expand"}
+          >
+            <span className="text-yellow-500">{node.isOpen ? "▾" : "▸"}</span>
+            <span className="text-yellow-400">📁</span>
+            <span className="truncate">{node.name}</span>
+          </button>
+
+          {node.isOpen && (
+            <div className="space-y-2">
+              {node.children.length === 0 ? (
+                <div
+                  className="text-white/50 text-sm px-2 py-1"
+                  style={{ paddingLeft: 34 + indent }}
+                >
+                  Empty
+                </div>
+              ) : (
+                node.children.map((c) => renderFSNode(envId, c, depth + 1))
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // file
+    return (
+      <div
+        key={node.id}
+        className="flex items-center justify-between gap-3 bg-white/5 rounded-xl px-3 py-3"
+        style={{ marginLeft: 10 + indent }}
+      >
+        <div className="truncate text-white/90 flex items-center gap-2">
+          <span className="text-white/70">📄</span>
+          <span className="truncate">{node.name}</span>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => handleView(node.url)}
+            className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+            aria-label="View"
+            title="View"
+          >
+            <span className="text-yellow-500 text-base">👁</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleDownload(node.name, node.url)}
+            className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+            aria-label="Download"
+            title="Download"
+          >
+            <span className="text-yellow-500 text-base">⬇</span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Environment tree rendering (env rows stay same size; indentation is internal)
   const renderEnvironmentTree = (env: Environment, depth: number) => {
     const indent = Math.min(depth * 18, 180);
 
@@ -388,7 +607,6 @@ export default function AdminDashboard() {
           className="w-full bg-white/5 rounded-xl px-3 py-3 relative"
           style={{ borderLeft: `4px solid ${env.color}` }}
         >
-          {/* subtle vertical guide to make nesting obvious even when expanded */}
           {depth > 0 && (
             <div
               className="absolute top-0 bottom-0 w-px bg-white/10"
@@ -414,6 +632,7 @@ export default function AdminDashboard() {
               )}
             </button>
 
+            {/* ✅ PM-requested: include SAME "upload folder" button on each environment bar */}
             <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
@@ -425,6 +644,18 @@ export default function AdminDashboard() {
                 <span className="text-[#A78BFA] text-base">👥</span>
               </button>
 
+              {/* Upload folder (folder structure) */}
+              <button
+                type="button"
+                onClick={() => openFolderPickerFor(env.id)}
+                className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+                aria-label="Upload folder"
+                title="Upload folder"
+              >
+                <span className="text-yellow-400 text-lg">📁</span>
+              </button>
+
+              {/* Add nested environment */}
               <button
                 type="button"
                 onClick={() => handleAddChildEnvironment(env.id)}
@@ -435,6 +666,7 @@ export default function AdminDashboard() {
                 <span className="text-yellow-500 text-lg font-bold">⤴</span>
               </button>
 
+              {/* Add files (plain files) */}
               <button
                 type="button"
                 onClick={() => openFilePickerFor(env.id)}
@@ -449,21 +681,21 @@ export default function AdminDashboard() {
 
           {env.isOpen && (
             <div className="mt-3 space-y-3">
-              {/* ✅ Children FIRST (always above docs) */}
+              {/* Environments FIRST */}
               {env.children.length > 0 && (
                 <div className="space-y-3">
                   {env.children.map((child) => renderEnvironmentTree(child, depth + 1))}
                 </div>
               )}
 
-              {/* Docs SECOND */}
-              {env.docs.length === 0 ? (
+              {/* Files/Folders SECOND (VSCode-like tree) */}
+              {env.items.length === 0 ? (
                 <div className="text-white/60 text-sm" style={{ paddingLeft: indent }}>
-                  No documents in this environment.
+                  Empty
                 </div>
               ) : (
-                <div className="space-y-3" style={{ paddingLeft: indent }}>
-                  {env.docs.map(renderDocRow)}
+                <div className="space-y-2" style={{ paddingLeft: indent }}>
+                  {env.items.map((n) => renderFSNode(env.id, n, 0))}
                 </div>
               )}
             </div>
@@ -519,13 +751,23 @@ export default function AdminDashboard() {
                 </button>
               </div>
 
-              {/* Hidden sidebar file input */}
+              {/* Hidden file inputs */}
               <input
                 ref={fileInputRef}
                 type="file"
                 multiple
                 className="hidden"
                 onChange={handleFilesSelected}
+              />
+
+              {/* @ts-expect-error - webkitdirectory is a non-standard input attribute (works in Chromium) */}
+              <input
+                ref={folderInputRef}
+                type="file"
+                multiple
+                webkitdirectory="true"
+                className="hidden"
+                onChange={handleFolderSelected}
               />
             </div>
 
@@ -534,15 +776,13 @@ export default function AdminDashboard() {
               {/* Default docs */}
               <div className="space-y-3">
                 {defaultDocs.length === 0 ? (
-                  <div className="text-white/70 text-sm">
-                    No documents uploaded yet.
-                  </div>
+                  <div className="text-white/70 text-sm">No documents uploaded yet.</div>
                 ) : (
-                  defaultDocs.map(renderDocRow)
+                  defaultDocs.map(renderDefaultDocRow)
                 )}
               </div>
 
-              {/* Environments (recursive, nested cues, no shrinking) */}
+              {/* Environments */}
               {environments.map((env) => renderEnvironmentTree(env, 0))}
             </div>
           </div>
@@ -609,9 +849,7 @@ export default function AdminDashboard() {
               <div className="text-sm text-white/80">
                 Files:{" "}
                 <span className="text-white/90">
-                  {uploadFiles.length === 0
-                    ? "None selected"
-                    : `${uploadFiles.length} selected`}
+                  {uploadFiles.length === 0 ? "None selected" : `${uploadFiles.length} selected`}
                 </span>
               </div>
 
@@ -645,9 +883,7 @@ export default function AdminDashboard() {
                 type="button"
                 className="bg-yellow-500 text-black px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-95 disabled:opacity-40 disabled:cursor-not-allowed"
                 onClick={confirmModalUpload}
-                disabled={
-                  uploadSelectedEnvIds.length === 0 || uploadFiles.length === 0
-                }
+                disabled={uploadSelectedEnvIds.length === 0 || uploadFiles.length === 0}
               >
                 Upload
               </button>
