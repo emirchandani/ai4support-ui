@@ -242,6 +242,39 @@ function removeNodeById(
   return { next: rec(nodes), removedUrls };
 }
 
+// ---------- Environment delete helpers (NEW) ----------
+function collectEnvSubtreeUrls(env: Environment): string[] {
+  const urls: string[] = [];
+  urls.push(...collectUrls(env.items));
+  for (const c of env.children) urls.push(...collectEnvSubtreeUrls(c));
+  return urls;
+}
+
+function removeEnvironmentById(
+  envs: Environment[],
+  envId: string
+): { next: Environment[]; removedUrls: string[] } {
+  const removedUrls: string[] = [];
+
+  const rec = (list: Environment[]): Environment[] => {
+    const out: Environment[] = [];
+    for (const env of list) {
+      if (env.id === envId) {
+        removedUrls.push(...collectEnvSubtreeUrls(env));
+        continue;
+      }
+      if (env.children.length > 0) {
+        out.push({ ...env, children: rec(env.children) });
+      } else {
+        out.push(env);
+      }
+    }
+    return out;
+  };
+
+  return { next: rec(envs), removedUrls };
+}
+
 export default function AdminDashboard() {
   const navigate = useNavigate();
 
@@ -429,12 +462,31 @@ export default function AdminDashboard() {
     showToast(`Removed "${node.name}"`);
   };
 
+  // NEW: delete environment (and all nested envs/items)
+  const removeEnvironment = (envId: string) => {
+    const env = findEnvById(environments, envId);
+    const label = env?.name ?? "environment";
+    if (!confirmRemove(`${label} (environment)`)) return;
+
+    setEnvironments((prev) => {
+      const { next, removedUrls } = removeEnvironmentById(prev, envId);
+      for (const u of removedUrls) {
+        try {
+          URL.revokeObjectURL(u);
+        } catch {}
+      }
+      return next;
+    });
+
+    showToast(`Removed "${label}"`);
+  };
+
   const renderDefaultDocRow = (doc: UploadedDoc) => (
     <div
       key={doc.id}
       className="flex items-center justify-between gap-3 bg-white/5 rounded-xl px-3 py-3"
     >
-      <div className="truncate text-white/90">{doc.name}</div>
+      <div className="whitespace-nowrap text-white/90">{doc.name}</div>
 
       <div className="flex items-center gap-2 shrink-0">
         <button
@@ -693,7 +745,8 @@ export default function AdminDashboard() {
             >
               <span className="text-yellow-500">{node.isOpen ? "▾" : "▸"}</span>
               <span className="text-yellow-400">📁</span>
-              <span className="truncate">{node.name}</span>
+              {/* FIX: do not aggressively truncate; allow horizontal scroll */}
+              <span className="whitespace-nowrap">{node.name}</span>
             </button>
 
             <button
@@ -734,9 +787,10 @@ export default function AdminDashboard() {
         className="flex items-center justify-between gap-3 bg-white/5 rounded-xl px-3 py-3"
         style={{ marginLeft: 10 + indent }}
       >
-        <div className="truncate text-white/90 flex items-center gap-2 min-w-0">
+        {/* FIX: no aggressive truncation; allow horizontal scroll */}
+        <div className="text-white/90 flex items-center gap-2 min-w-0">
           <span className="text-white/70">📄</span>
-          <span className="truncate">{node.name}</span>
+          <span className="whitespace-nowrap">{node.name}</span>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
@@ -795,10 +849,11 @@ export default function AdminDashboard() {
     return (
       <div key={env.id} className="w-full">
         <div
-          className="inline-block align-top bg-white/5 rounded-xl px-3 py-3 relative overflow-hidden"
+          className="inline-block align-top bg-white/5 rounded-xl px-3 py-3 relative"
+          // FIX: allow env row to expand as wide as needed; sidebar already has overflow-x-auto
           style={{
             borderLeft: `4px solid ${env.color}`,
-            width: "min(100%, 520px)",
+            width: "max-content",
             minWidth: listMinWidth,
           }}
         >
@@ -824,16 +879,17 @@ export default function AdminDashboard() {
           <div className="flex items-center justify-between gap-3">
             <button
               type="button"
-              className="flex items-center gap-2 min-w-0 flex-1"
+              className="flex items-center gap-2 flex-1"
               onClick={() => toggleEnvironment(env.id)}
               title={env.isOpen ? "Collapse" : "Expand"}
               style={{ paddingLeft: 10 + gutterWidth + 6 }}
             >
               <span className="text-yellow-500">{env.isOpen ? "▾" : "▸"}</span>
-              <span className="font-medium truncate">{env.name}</span>
+              {/* FIX: do not truncate env name; allow horizontal scroll */}
+              <span className="font-medium whitespace-nowrap">{env.name}</span>
 
               {env.assignedUsers.length > 0 && (
-                <span className="ml-2 text-xs text-white/60 truncate">
+                <span className="ml-2 text-xs text-white/60 whitespace-nowrap">
                   ({env.assignedUsers.length} assigned)
                 </span>
               )}
@@ -879,6 +935,17 @@ export default function AdminDashboard() {
               >
                 <span className="text-yellow-500 text-lg font-bold">⤴</span>
               </button>
+
+              {/* NEW: delete environment */}
+              <button
+                type="button"
+                onClick={() => removeEnvironment(env.id)}
+                className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+                aria-label="Remove environment"
+                title="Remove environment"
+              >
+                <span className="text-red-300 text-base">🗑</span>
+              </button>
             </div>
           </div>
 
@@ -896,15 +963,6 @@ export default function AdminDashboard() {
     );
   };
 
-  /**
-   * FIX (the only change you asked for):
-   * When the sidebar is narrow, the two top buttons were overlapping.
-   * We make the header controls responsive:
-   * - If sidebar is narrow: buttons stack in 2 rows (no overlap)
-   * - If sidebar is wide: buttons sit on one row (as before)
-   *
-   * This matches VSCode behavior (controls reflow instead of overlapping).
-   */
   const headerCompact = sidebarWidth <= 420;
 
   return (
@@ -943,7 +1001,6 @@ export default function AdminDashboard() {
                   <div className="flex items-center justify-between w-full gap-3">
                     <h2 className="font-semibold leading-9 min-w-0">Knowledge Base</h2>
 
-                    {/* When compact, keep buttons aligned right but allow wrap (no overlap) */}
                     <div
                       className={`flex gap-3 ${
                         headerCompact ? "flex-wrap justify-end" : "items-center"
