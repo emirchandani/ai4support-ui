@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { clearAuth } from "../auth";
 import ChatPanel from "../components/ChatPanel";
@@ -6,19 +6,19 @@ import ChatPanel from "../components/ChatPanel";
 type UploadedDoc = {
   id: string;
   name: string;
-  url: string; // blob URL for view/download
+  url: string;
 };
 
 type FSNode =
   | {
-      id: string; // unique per env root
+      id: string;
       type: "folder";
       name: string;
       isOpen: boolean;
       children: FSNode[];
     }
   | {
-      id: string; // unique per env root
+      id: string;
       type: "file";
       name: string;
       url: string;
@@ -30,20 +30,20 @@ type Environment = {
   isOpen: boolean;
   color: string;
   assignedUsers: string[];
-  children: Environment[]; // nested environments (your existing feature)
-  items: FSNode[]; // ✅ VSCode-like file tree INSIDE an environment
+  children: Environment[];
+  items: FSNode[];
 };
 
 const ENV_COLORS = [
-  "#F87171", // red
-  "#FBBF24", // amber
-  "#34D399", // emerald
-  "#60A5FA", // blue
-  "#A78BFA", // violet
-  "#22D3EE", // cyan
-  "#FB7185", // rose
-  "#F97316", // orange
-  "#84CC16", // lime
+  "#F87171",
+  "#FBBF24",
+  "#34D399",
+  "#60A5FA",
+  "#A78BFA",
+  "#22D3EE",
+  "#FB7185",
+  "#F97316",
+  "#84CC16",
 ];
 
 function makeDocId(file: File) {
@@ -85,31 +85,40 @@ function updateEnvTree(
   });
 }
 
-function flattenEnvNodes(
+function flattenVisibleEnvRows(
   envs: Environment[],
   depth = 0
 ): Array<{ env: Environment; depth: number }> {
   const out: Array<{ env: Environment; depth: number }> = [];
   for (const env of envs) {
     out.push({ env, depth });
-    if (env.children.length > 0) out.push(...flattenEnvNodes(env.children, depth + 1));
+    if (env.isOpen && env.children.length) {
+      out.push(...flattenVisibleEnvRows(env.children, depth + 1));
+    }
   }
   return out;
 }
 
-// ---------- File Tree Helpers (inside an environment) ----------
+function getMaxDepth(envs: Environment[], depth = 0): number {
+  let max = depth;
+  for (const e of envs) {
+    max = Math.max(max, depth);
+    if (e.children.length) max = Math.max(max, getMaxDepth(e.children, depth + 1));
+  }
+  return max;
+}
+
+// ---------- File Tree Helpers ----------
 
 function cloneNodes(nodes: FSNode[]): FSNode[] {
   return nodes.map((n) =>
-    n.type === "file"
-      ? { ...n }
-      : { ...n, children: cloneNodes(n.children) }
+    n.type === "file" ? { ...n } : { ...n, children: cloneNodes(n.children) }
   );
 }
 
 function sortNodes(nodes: FSNode[]) {
   nodes.sort((a, b) => {
-    if (a.type !== b.type) return a.type === "folder" ? -1 : 1; // folders first
+    if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
     return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
   });
   for (const n of nodes) if (n.type === "folder") sortNodes(n.children);
@@ -133,19 +142,11 @@ function findOrCreateFolder(parent: FSNode[], folderName: string, folderId: stri
   return existing as Extract<FSNode, { type: "folder" }>;
 }
 
-/**
- * Merge folder upload files into an env's FSNode tree WITHOUT creating environments.
- * Uses webkitRelativePath (e.g., "Cisc 101/A2 q1.py").
- */
 function mergeFolderFilesIntoTree(existing: FSNode[], files: File[]) {
   const root = cloneNodes(existing);
 
   for (const file of files) {
-    const rel =
-      (file as any).webkitRelativePath ||
-      // fallback: treat as root file
-      file.name;
-
+    const rel = (file as any).webkitRelativePath || file.name;
     const parts = String(rel).split("/").filter(Boolean);
     if (parts.length === 0) continue;
 
@@ -153,9 +154,8 @@ function mergeFolderFilesIntoTree(existing: FSNode[], files: File[]) {
     const folderParts = parts.slice(0, -1);
 
     let cursor = root;
-
-    // build folders
     let pathAccum = "";
+
     for (const folder of folderParts) {
       pathAccum = pathAccum ? `${pathAccum}/${folder}` : folder;
       const folderId = `folder:${pathAccum}`;
@@ -163,9 +163,18 @@ function mergeFolderFilesIntoTree(existing: FSNode[], files: File[]) {
       cursor = folderNode.children;
     }
 
-    // add/replace file node (avoid duplicates by id)
     const fileId = `file:${rel}`;
     const existingIdx = cursor.findIndex((n) => n.id === fileId);
+
+    if (existingIdx >= 0) {
+      const prev = cursor[existingIdx];
+      if (prev.type === "file") {
+        try {
+          URL.revokeObjectURL(prev.url);
+        } catch {}
+      }
+    }
+
     const newNode: FSNode = {
       id: fileId,
       type: "file",
@@ -181,7 +190,6 @@ function mergeFolderFilesIntoTree(existing: FSNode[], files: File[]) {
   return root;
 }
 
-/** Add plain files to env root (not folder upload) */
 function addFilesToRoot(existing: FSNode[], files: File[]) {
   const root = cloneNodes(existing);
 
@@ -199,47 +207,135 @@ function addFilesToRoot(existing: FSNode[], files: File[]) {
   return root;
 }
 
+function collectUrls(nodes: FSNode[]): string[] {
+  const urls: string[] = [];
+  const walk = (ns: FSNode[]) => {
+    for (const n of ns) {
+      if (n.type === "file") urls.push(n.url);
+      else walk(n.children);
+    }
+  };
+  walk(nodes);
+  return urls;
+}
+
+function removeNodeById(
+  nodes: FSNode[],
+  nodeId: string
+): { next: FSNode[]; removedUrls: string[] } {
+  const removedUrls: string[] = [];
+
+  const rec = (list: FSNode[]): FSNode[] => {
+    const out: FSNode[] = [];
+    for (const n of list) {
+      if (n.id === nodeId) {
+        if (n.type === "file") removedUrls.push(n.url);
+        else removedUrls.push(...collectUrls(n.children));
+        continue;
+      }
+      if (n.type === "folder") out.push({ ...n, children: rec(n.children) });
+      else out.push(n);
+    }
+    return out;
+  };
+
+  return { next: rec(nodes), removedUrls };
+}
+
 export default function AdminDashboard() {
   const navigate = useNavigate();
 
-  // "+" and per-env upload-file buttons (plain files)
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // per-env upload-folder buttons (folder structure)
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Modal upload input (Notion flow: multi-env file upload)
   const modalFileInputRef = useRef<HTMLInputElement | null>(null);
+  const modalFolderInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Assign users modal input
   const assignInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Which environment is currently receiving uploads from sidebar buttons
   const [targetEnvId, setTargetEnvId] = useState<string>("__default__");
 
-  // Default docs (top bucket stays as-is)
   const [defaultDocs, setDefaultDocs] = useState<UploadedDoc[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
 
-  // Upload modal state (Notion)
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadSelectedEnvIds, setUploadSelectedEnvIds] = useState<string[]>([]);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploadIsFolder, setUploadIsFolder] = useState(false);
 
-  // Toast
   const [toast, setToast] = useState<string | null>(null);
 
-  // Assign users modal
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignEnvId, setAssignEnvId] = useState<string | null>(null);
   const [assignUsersDraft, setAssignUsersDraft] = useState<string>("");
+
+  // ===== Resizable Sidebar =====
+  const DEFAULT_SIDEBAR = 420;
+  const MIN_SIDEBAR = 300;
+  const MAX_SIDEBAR = 720;
+
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = Number(window.localStorage.getItem("admin.sidebarWidth"));
+    return Number.isFinite(saved) && saved > 0 ? saved : DEFAULT_SIDEBAR;
+  });
+
+  const dragStateRef = useRef<{
+    dragging: boolean;
+    startX: number;
+    startWidth: number;
+  }>({ dragging: false, startX: 0, startWidth: sidebarWidth });
+
+  useEffect(() => {
+    window.localStorage.setItem("admin.sidebarWidth", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragStateRef.current.dragging) return;
+      const dx = e.clientX - dragStateRef.current.startX;
+      const next = Math.max(
+        MIN_SIDEBAR,
+        Math.min(MAX_SIDEBAR, dragStateRef.current.startWidth + dx)
+      );
+      setSidebarWidth(next);
+    };
+
+    const onUp = () => {
+      if (!dragStateRef.current.dragging) return;
+      dragStateRef.current.dragging = false;
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  const startResize = (e: React.MouseEvent) => {
+    dragStateRef.current = { dragging: true, startX: e.clientX, startWidth: sidebarWidth };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+  };
 
   const handleLogout = () => {
     clearAuth();
     navigate("/");
   };
 
-  // ===== Sidebar: open pickers =====
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 3500);
+  };
+
+  const confirmRemove = (label: string) => {
+    return window.confirm(`Remove "${label}"? This cannot be undone.`);
+  };
+
+  // ===== Sidebar pickers =====
   const openFilePickerFor = (envId: string) => {
     setTargetEnvId(envId);
     fileInputRef.current?.click();
@@ -250,7 +346,7 @@ export default function AdminDashboard() {
     folderInputRef.current?.click();
   };
 
-  // ===== Plain file uploads (adds files at env root; DOES NOT create envs) =====
+  // ===== Upload handlers =====
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
@@ -274,7 +370,6 @@ export default function AdminDashboard() {
     e.target.value = "";
   };
 
-  // ===== Folder uploads (renders correct file structure inside env; DOES NOT create envs) =====
   const handleFolderSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
@@ -292,7 +387,6 @@ export default function AdminDashboard() {
     e.target.value = "";
   };
 
-  // ===== View / Download =====
   const handleView = (url: string) => {
     window.open(url, "_blank", "noopener,noreferrer");
   };
@@ -304,6 +398,35 @@ export default function AdminDashboard() {
     document.body.appendChild(a);
     a.click();
     a.remove();
+  };
+
+  // ===== Deletes =====
+  const removeDefaultDoc = (doc: UploadedDoc) => {
+    if (!confirmRemove(doc.name)) return;
+    try {
+      URL.revokeObjectURL(doc.url);
+    } catch {}
+    setDefaultDocs((prev) => prev.filter((d) => d.id !== doc.id));
+    showToast(`Removed "${doc.name}"`);
+  };
+
+  const removeFSNodeFromEnv = (envId: string, node: FSNode) => {
+    const label = node.type === "folder" ? `${node.name} (folder)` : node.name;
+    if (!confirmRemove(label)) return;
+
+    setEnvironments((prev) =>
+      updateEnvTree(prev, envId, (env) => {
+        const { next, removedUrls } = removeNodeById(env.items, node.id);
+        for (const u of removedUrls) {
+          try {
+            URL.revokeObjectURL(u);
+          } catch {}
+        }
+        return { ...env, items: next };
+      })
+    );
+
+    showToast(`Removed "${node.name}"`);
   };
 
   const renderDefaultDocRow = (doc: UploadedDoc) => (
@@ -332,6 +455,16 @@ export default function AdminDashboard() {
           title="Download"
         >
           <span className="text-yellow-500 text-base">⬇</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => removeDefaultDoc(doc)}
+          className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+          aria-label="Remove"
+          title="Remove"
+        >
+          <span className="text-red-300 text-base">🗑</span>
         </button>
       </div>
     </div>
@@ -398,17 +531,34 @@ export default function AdminDashboard() {
     );
   };
 
-  // ===== Upload Documents Modal (Notion) =====
+  // ===== Upload modal =====
+  const modalFlattenedAll = useMemo(() => {
+    const walk = (
+      envs: Environment[],
+      depth = 0
+    ): Array<{ env: Environment; depth: number }> => {
+      const out: Array<{ env: Environment; depth: number }> = [];
+      for (const env of envs) {
+        out.push({ env, depth });
+        if (env.children.length) out.push(...walk(env.children, depth + 1));
+      }
+      return out;
+    };
+    return walk(environments, 0);
+  }, [environments]);
+
   const openUploadModal = () => {
     setUploadOpen(true);
     setUploadSelectedEnvIds([]);
     setUploadFiles([]);
+    setUploadIsFolder(false);
   };
 
   const closeUploadModal = () => {
     setUploadOpen(false);
     setUploadSelectedEnvIds([]);
     setUploadFiles([]);
+    setUploadIsFolder(false);
   };
 
   const toggleEnvSelected = (envId: string) => {
@@ -417,20 +567,20 @@ export default function AdminDashboard() {
     );
   };
 
-  const pickModalFiles = () => {
-    modalFileInputRef.current?.click();
-  };
-
   const onModalFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
     setUploadFiles(files);
+    setUploadIsFolder(false);
     e.target.value = "";
   };
 
-  const showToast = (msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 3500);
+  const onModalFolderSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+    setUploadFiles(files);
+    setUploadIsFolder(true);
+    e.target.value = "";
   };
 
   const confirmModalUpload = () => {
@@ -441,7 +591,10 @@ export default function AdminDashboard() {
       for (const envId of uploadSelectedEnvIds) {
         updated = updateEnvTree(updated, envId, (env) => ({
           ...env,
-          items: addFilesToRoot(env.items, uploadFiles),
+          isOpen: true,
+          items: uploadIsFolder
+            ? mergeFolderFilesIntoTree(env.items, uploadFiles)
+            : addFilesToRoot(env.items, uploadFiles),
         }));
       }
       return updated;
@@ -458,12 +611,13 @@ export default function AdminDashboard() {
         ? envNames.map((n) => `"${n}"`).join(", ")
         : "5+ environments";
 
-    if (uploadFiles.length === 1) {
-      showToast(`Uploaded "${uploadFiles[0].name}" to ${destinationText}`);
-    } else {
-      showToast(`Uploaded ${uploadFiles.length} files to ${destinationText}`);
-    }
+    const what = uploadIsFolder
+      ? `a folder (${uploadFiles.length} files)`
+      : uploadFiles.length === 1
+      ? `"${uploadFiles[0].name}"`
+      : `${uploadFiles.length} files`;
 
+    showToast(`Uploaded ${what} to ${destinationText}`);
     closeUploadModal();
   };
 
@@ -504,8 +658,7 @@ export default function AdminDashboard() {
     closeAssignModal();
   };
 
-  // ===== FS Tree Rendering (VSCode-like) =====
-
+  // ===== FS Tree Rendering =====
   const toggleFolderInEnv = (envId: string, folderId: string) => {
     const toggleInNodes = (nodes: FSNode[]): FSNode[] =>
       nodes.map((n) => {
@@ -530,17 +683,32 @@ export default function AdminDashboard() {
     if (node.type === "folder") {
       return (
         <div key={node.id} className="space-y-2">
-          <button
-            type="button"
-            className="w-full flex items-center gap-2 text-left text-white/90 hover:bg-white/5 rounded-lg px-2 py-2"
-            style={{ paddingLeft: 10 + indent }}
-            onClick={() => toggleFolderInEnv(envId, node.id)}
-            title={node.isOpen ? "Collapse" : "Expand"}
-          >
-            <span className="text-yellow-500">{node.isOpen ? "▾" : "▸"}</span>
-            <span className="text-yellow-400">📁</span>
-            <span className="truncate">{node.name}</span>
-          </button>
+          <div className="w-full flex items-center justify-between gap-2">
+            <button
+              type="button"
+              className="flex-1 min-w-0 flex items-center gap-2 text-left text-white/90 hover:bg-white/5 rounded-lg px-2 py-2"
+              style={{ paddingLeft: 10 + indent }}
+              onClick={() => toggleFolderInEnv(envId, node.id)}
+              title={node.isOpen ? "Collapse" : "Expand"}
+            >
+              <span className="text-yellow-500">{node.isOpen ? "▾" : "▸"}</span>
+              <span className="text-yellow-400">📁</span>
+              <span className="truncate">{node.name}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                removeFSNodeFromEnv(envId, node);
+              }}
+              className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center shrink-0"
+              aria-label="Remove folder"
+              title="Remove folder"
+            >
+              <span className="text-red-300 text-base">🗑</span>
+            </button>
+          </div>
 
           {node.isOpen && (
             <div className="space-y-2">
@@ -560,14 +728,13 @@ export default function AdminDashboard() {
       );
     }
 
-    // file
     return (
       <div
         key={node.id}
         className="flex items-center justify-between gap-3 bg-white/5 rounded-xl px-3 py-3"
         style={{ marginLeft: 10 + indent }}
       >
-        <div className="truncate text-white/90 flex items-center gap-2">
+        <div className="truncate text-white/90 flex items-center gap-2 min-w-0">
           <span className="text-white/70">📄</span>
           <span className="truncate">{node.name}</span>
         </div>
@@ -592,35 +759,75 @@ export default function AdminDashboard() {
           >
             <span className="text-yellow-500 text-base">⬇</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => removeFSNodeFromEnv(envId, node)}
+            className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+            aria-label="Remove"
+            title="Remove"
+          >
+            <span className="text-red-300 text-base">🗑</span>
+          </button>
         </div>
       </div>
     );
   };
 
-  // Environment tree rendering (env rows stay same size; indentation is internal)
-  const renderEnvironmentTree = (env: Environment, depth: number) => {
-    const indent = Math.min(depth * 18, 180);
+  // ===== VSCode gutter + rows =====
+  const maxDepth = useMemo(() => getMaxDepth(environments, 0), [environments]);
+  const visibleRows = useMemo(() => flattenVisibleEnvRows(environments, 0), [environments]);
+
+  const LEVEL_GAP = 10;
+  const GUTTER_PAD = 10;
+  const MAX_GUTTER = 140;
+  const gutterWidth = Math.min(MAX_GUTTER, GUTTER_PAD + (maxDepth + 1) * LEVEL_GAP);
+
+  const BASE_ROW_WIDTH = 380;
+  const listMinWidth = useMemo(
+    () => `${BASE_ROW_WIDTH + Math.min(140, maxDepth * 10)}px`,
+    [maxDepth]
+  );
+
+  const renderEnvRow = (env: Environment, depth: number) => {
+    const guides = Array.from({ length: depth }).map((_, i) => i);
 
     return (
-      <div key={env.id} className="space-y-3">
+      <div key={env.id} className="w-full">
         <div
-          className="w-full bg-white/5 rounded-xl px-3 py-3 relative"
-          style={{ borderLeft: `4px solid ${env.color}` }}
+          className="inline-block align-top bg-white/5 rounded-xl px-3 py-3 relative overflow-hidden"
+          style={{
+            borderLeft: `4px solid ${env.color}`,
+            width: "min(100%, 520px)",
+            minWidth: listMinWidth,
+          }}
         >
-          {depth > 0 && (
+          <div className="absolute top-0 bottom-0" style={{ left: 10, width: gutterWidth }}>
+            {guides.map((i) => (
+              <div
+                key={`${env.id}-guide-${i}`}
+                className="absolute top-3 bottom-3 w-px bg-white/10"
+                style={{ left: GUTTER_PAD + i * LEVEL_GAP }}
+              />
+            ))}
+
             <div
-              className="absolute top-0 bottom-0 w-px bg-white/10"
-              style={{ left: 10 + indent }}
+              className="absolute top-3 bottom-3 rounded-full"
+              style={{
+                left: GUTTER_PAD + depth * LEVEL_GAP - 1,
+                width: 3,
+                background: env.color,
+              }}
             />
-          )}
+          </div>
 
           <div className="flex items-center justify-between gap-3">
             <button
               type="button"
-              className="flex items-center gap-2 min-w-0"
+              className="flex items-center gap-2 min-w-0 flex-1"
               onClick={() => toggleEnvironment(env.id)}
               title={env.isOpen ? "Collapse" : "Expand"}
-              style={{ paddingLeft: indent }}
+              style={{ paddingLeft: 10 + gutterWidth + 6 }}
             >
               <span className="text-yellow-500">{env.isOpen ? "▾" : "▸"}</span>
               <span className="font-medium truncate">{env.name}</span>
@@ -632,7 +839,6 @@ export default function AdminDashboard() {
               )}
             </button>
 
-            {/* ✅ PM-requested: include SAME "upload folder" button on each environment bar */}
             <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
@@ -644,7 +850,6 @@ export default function AdminDashboard() {
                 <span className="text-[#A78BFA] text-base">👥</span>
               </button>
 
-              {/* Upload folder (folder structure) */}
               <button
                 type="button"
                 onClick={() => openFolderPickerFor(env.id)}
@@ -655,18 +860,6 @@ export default function AdminDashboard() {
                 <span className="text-yellow-400 text-lg">📁</span>
               </button>
 
-              {/* Add nested environment */}
-              <button
-                type="button"
-                onClick={() => handleAddChildEnvironment(env.id)}
-                className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
-                aria-label="Add nested environment"
-                title="Add nested environment"
-              >
-                <span className="text-yellow-500 text-lg font-bold">⤴</span>
-              </button>
-
-              {/* Add files (plain files) */}
               <button
                 type="button"
                 onClick={() => openFilePickerFor(env.id)}
@@ -676,27 +869,25 @@ export default function AdminDashboard() {
               >
                 <span className="text-yellow-500 text-lg font-bold">+</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => handleAddChildEnvironment(env.id)}
+                className="h-9 w-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center"
+                aria-label="Add nested environment"
+                title="Add nested environment"
+              >
+                <span className="text-yellow-500 text-lg font-bold">⤴</span>
+              </button>
             </div>
           </div>
 
           {env.isOpen && (
-            <div className="mt-3 space-y-3">
-              {/* Environments FIRST */}
-              {env.children.length > 0 && (
-                <div className="space-y-3">
-                  {env.children.map((child) => renderEnvironmentTree(child, depth + 1))}
-                </div>
-              )}
-
-              {/* Files/Folders SECOND (VSCode-like tree) */}
+            <div className="mt-3 space-y-2" style={{ paddingLeft: 10 + gutterWidth + 6 }}>
               {env.items.length === 0 ? (
-                <div className="text-white/60 text-sm" style={{ paddingLeft: indent }}>
-                  Empty
-                </div>
+                <div className="text-white/60 text-sm">Empty</div>
               ) : (
-                <div className="space-y-2" style={{ paddingLeft: indent }}>
-                  {env.items.map((n) => renderFSNode(env.id, n, 0))}
-                </div>
+                <div className="space-y-2">{env.items.map((n) => renderFSNode(env.id, n, 0))}</div>
               )}
             </div>
           )}
@@ -705,7 +896,16 @@ export default function AdminDashboard() {
     );
   };
 
-  const modalFlattened = useMemo(() => flattenEnvNodes(environments), [environments]);
+  /**
+   * FIX (the only change you asked for):
+   * When the sidebar is narrow, the two top buttons were overlapping.
+   * We make the header controls responsive:
+   * - If sidebar is narrow: buttons stack in 2 rows (no overlap)
+   * - If sidebar is wide: buttons sit on one row (as before)
+   *
+   * This matches VSCode behavior (controls reflow instead of overlapping).
+   */
+  const headerCompact = sidebarWidth <= 420;
 
   return (
     <div className="h-screen bg-[#1c2237] p-6 text-white">
@@ -727,64 +927,96 @@ export default function AdminDashboard() {
 
         {/* Content */}
         <div className="flex gap-6 flex-1 min-h-0">
-          {/* Knowledge Base */}
-          <div className="w-[420px] flex flex-col bg-white/5 rounded-xl p-4 min-h-0">
-            {/* Top row */}
-            <div className="flex items-start justify-between gap-3 mb-4">
-              <h2 className="font-semibold leading-9">Knowledge Base</h2>
-
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  className="bg-yellow-500 text-black px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-95"
-                  onClick={openUploadModal}
+          {/* Knowledge Base (Resizable) */}
+          <div
+            className="flex flex-col bg-white/5 rounded-xl min-h-0 relative overflow-hidden"
+            style={{ width: sidebarWidth }}
+          >
+            {/* Sticky header */}
+            <div className="sticky top-0 z-10 bg-[#2a3153] border-b border-white/10 rounded-t-xl">
+              <div className="p-4">
+                <div
+                  className={`flex items-start justify-between gap-3 ${
+                    headerCompact ? "flex-col" : "flex-row"
+                  }`}
                 >
-                  Upload documents
-                </button>
+                  <div className="flex items-center justify-between w-full gap-3">
+                    <h2 className="font-semibold leading-9 min-w-0">Knowledge Base</h2>
 
-                <button
-                  type="button"
-                  className="bg-white/5 hover:bg-white/10 text-white px-4 py-2 rounded-lg text-sm font-semibold border border-white/10"
-                  onClick={handleAddEnvironment}
-                >
-                  Add environment
-                </button>
+                    {/* When compact, keep buttons aligned right but allow wrap (no overlap) */}
+                    <div
+                      className={`flex gap-3 ${
+                        headerCompact ? "flex-wrap justify-end" : "items-center"
+                      }`}
+                      style={{ maxWidth: headerCompact ? "100%" : undefined }}
+                    >
+                      <button
+                        type="button"
+                        className="bg-yellow-500 text-black px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-95"
+                        onClick={openUploadModal}
+                      >
+                        Upload documents
+                      </button>
+
+                      <button
+                        type="button"
+                        className="bg-white/5 hover:bg-white/10 text-white px-4 py-2 rounded-lg text-sm font-semibold border border-white/10"
+                        onClick={handleAddEnvironment}
+                      >
+                        Add environment
+                      </button>
+                    </div>
+
+                    {/* Hidden inputs */}
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={handleFilesSelected}
+                    />
+
+                    {/* @ts-expect-error - webkitdirectory */}
+                    <input
+                      ref={folderInputRef}
+                      type="file"
+                      multiple
+                      webkitdirectory="true"
+                      className="hidden"
+                      onChange={handleFolderSelected}
+                    />
+                  </div>
+
+                  <div className="text-white/70 text-sm w-full">No documents uploaded yet.</div>
+                </div>
               </div>
-
-              {/* Hidden file inputs */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={handleFilesSelected}
-              />
-
-              {/* @ts-expect-error - webkitdirectory is a non-standard input attribute (works in Chromium) */}
-              <input
-                ref={folderInputRef}
-                type="file"
-                multiple
-                webkitdirectory="true"
-                className="hidden"
-                onChange={handleFolderSelected}
-              />
             </div>
 
             {/* Scroll area */}
-            <div className="flex-1 overflow-y-auto min-h-0 pr-1 space-y-4">
+            <div className="flex-1 overflow-y-auto overflow-x-auto min-h-0 px-4 pb-4 pt-4 space-y-4">
               {/* Default docs */}
               <div className="space-y-3">
-                {defaultDocs.length === 0 ? (
-                  <div className="text-white/70 text-sm">No documents uploaded yet.</div>
-                ) : (
-                  defaultDocs.map(renderDefaultDocRow)
-                )}
+                {defaultDocs.length === 0 ? null : defaultDocs.map(renderDefaultDocRow)}
               </div>
 
               {/* Environments */}
-              {environments.map((env) => renderEnvironmentTree(env, 0))}
+              <div className="space-y-3" style={{ minWidth: listMinWidth }}>
+                {visibleRows.map(({ env, depth }) => renderEnvRow(env, depth))}
+              </div>
             </div>
+
+            {/* Resize handle */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              onMouseDown={startResize}
+              className="absolute top-0 right-0 h-full w-2 cursor-col-resize"
+              title="Drag to resize"
+              style={{
+                background:
+                  "linear-gradient(to right, rgba(255,255,255,0.0), rgba(255,255,255,0.10), rgba(255,255,255,0.0))",
+              }}
+            />
           </div>
 
           {/* Chat */}
@@ -807,7 +1039,7 @@ export default function AdminDashboard() {
               <div>
                 <div className="text-lg font-semibold">Upload documents</div>
                 <div className="text-sm text-white/70 mt-1">
-                  Select environments, then choose files.
+                  Select environments, then choose files or a folder.
                 </div>
               </div>
               <button
@@ -827,7 +1059,7 @@ export default function AdminDashboard() {
                   No environments yet. Click “Add environment” first.
                 </div>
               ) : (
-                modalFlattened.map(({ env, depth }) => (
+                modalFlattenedAll.map(({ env, depth }) => (
                   <label
                     key={env.id}
                     className="flex items-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-3 cursor-pointer"
@@ -847,19 +1079,33 @@ export default function AdminDashboard() {
 
             <div className="mt-5 flex items-center justify-between gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
               <div className="text-sm text-white/80">
-                Files:{" "}
+                Selection:{" "}
                 <span className="text-white/90">
-                  {uploadFiles.length === 0 ? "None selected" : `${uploadFiles.length} selected`}
+                  {uploadFiles.length === 0
+                    ? "None selected"
+                    : uploadIsFolder
+                    ? `Folder (${uploadFiles.length} files)`
+                    : `${uploadFiles.length} file(s)`}
                 </span>
               </div>
 
-              <button
-                type="button"
-                onClick={pickModalFiles}
-                className="bg-yellow-500 text-black px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-95"
-              >
-                Choose files
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => modalFolderInputRef.current?.click()}
+                  className="bg-white/5 hover:bg-white/10 text-white px-4 py-2 rounded-lg text-sm font-semibold border border-white/10"
+                >
+                  Choose folder
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => modalFileInputRef.current?.click()}
+                  className="bg-yellow-500 text-black px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-95"
+                >
+                  Choose files
+                </button>
+              </div>
 
               <input
                 ref={modalFileInputRef}
@@ -867,6 +1113,16 @@ export default function AdminDashboard() {
                 multiple
                 className="hidden"
                 onChange={onModalFilesSelected}
+              />
+
+              {/* @ts-expect-error - webkitdirectory */}
+              <input
+                ref={modalFolderInputRef}
+                type="file"
+                multiple
+                webkitdirectory="true"
+                className="hidden"
+                onChange={onModalFolderSelected}
               />
             </div>
 
