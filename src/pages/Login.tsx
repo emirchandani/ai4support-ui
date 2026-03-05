@@ -44,24 +44,54 @@ export default function Login() {
     setError("");
   };
 
+  // NEW: Demo tab action (opens the user-side UI directly)
+  const goToDemo = () => {
+    clearAuth();
+    setRole("user");
+    navigate("/user");
+  };
+
+  // NEW: Meet the team tab (placeholder until the page exists)
+  const goToMeetTheTeam = () => {
+    // If/when you create a real route, replace this with:
+    // navigate("/meet-the-team");
+    window.alert("Meet the team page coming soon.");
+  };
+
   return (
     <div className="ai-page-bg flex items-center justify-center p-6">
       <div className="ai-card w-full max-w-xl p-8">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <div className="font-bold text-xl tracking-tight">
             Ai4Support <span className="text-ai-gold">Portal</span>
           </div>
-          <div className="text-xs text-ai-muted">UI-only prototype</div>
+
+          {/* NEW: top-right tabs */}
+          <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={goToDemo}
+              className="text-sm text-ai-gold hover:underline"
+            >
+              Demo
+            </button>
+
+            <button
+              type="button"
+              onClick={goToMeetTheTeam}
+              className="text-sm text-ai-gold hover:underline"
+            >
+              Meet the team
+            </button>
+          </div>
         </div>
 
         {/* STEP 1 — ROLE SELECTION */}
         {!role && (
           <>
             <h1 className="text-3xl font-bold mt-8">Login</h1>
-            <p className="text-ai-muted mt-2">
-              Choose a role to continue.
-            </p>
+            <p className="text-ai-muted mt-2">Choose a role to continue.</p>
 
             <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-4">
               <button
@@ -70,9 +100,7 @@ export default function Login() {
               >
                 <div>
                   <div className="font-semibold">Continue as User</div>
-                  <div className="text-sm text-ai-muted mt-1">
-                    Chatbot access
-                  </div>
+                  <div className="text-sm text-ai-muted mt-1">Chatbot access</div>
                 </div>
               </button>
 
@@ -120,30 +148,18 @@ export default function Login() {
                 onKeyDown={(e) => e.key === "Enter" && handleLogin()}
               />
 
-              {error && (
-                <div className="text-sm text-red-400">{error}</div>
-              )}
+              {error && <div className="text-sm text-red-400">{error}</div>}
 
               <button className="ai-btn-primary w-full" onClick={handleLogin}>
                 Login
               </button>
 
-              <button
-                className="ai-btn-secondary w-full"
-                onClick={resetToRoleSelection}
-              >
+              <button className="ai-btn-secondary w-full" onClick={resetToRoleSelection}>
                 ← Back
               </button>
             </div>
 
-            <div className="mt-6 text-xs text-ai-muted space-y-1">
-              <div>
-                User: <span className="text-ai-text">user@gmail.com / userchat</span>
-              </div>
-              <div>
-                Admin: <span className="text-ai-text">admin@gmail.com / adminchat</span>
-              </div>
-            </div>
+            {/* REMOVED: credentials display block (per request) */}
           </>
         )}
       </div>
