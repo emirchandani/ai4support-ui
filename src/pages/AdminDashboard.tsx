@@ -242,7 +242,7 @@ function removeNodeById(
   return { next: rec(nodes), removedUrls };
 }
 
-// ---------- Environment delete helpers (NEW) ----------
+// ---------- Environment delete helpers ----------
 function collectEnvSubtreeUrls(env: Environment): string[] {
   const urls: string[] = [];
   urls.push(...collectUrls(env.items));
@@ -302,6 +302,9 @@ export default function AdminDashboard() {
   const [assignEnvId, setAssignEnvId] = useState<string | null>(null);
   const [assignUsersDraft, setAssignUsersDraft] = useState<string>("");
 
+  // NEW: Knowledge Base full screen toggle
+  const [knowledgeBaseFullscreen, setKnowledgeBaseFullscreen] = useState(false);
+
   // ===== Resizable Sidebar =====
   const DEFAULT_SIDEBAR = 420;
   const MIN_SIDEBAR = 300;
@@ -324,7 +327,7 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (!dragStateRef.current.dragging) return;
+      if (!dragStateRef.current.dragging || knowledgeBaseFullscreen) return;
       const dx = e.clientX - dragStateRef.current.startX;
       const next = Math.max(
         MIN_SIDEBAR,
@@ -346,9 +349,10 @@ export default function AdminDashboard() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, []);
+  }, [knowledgeBaseFullscreen]);
 
   const startResize = (e: React.MouseEvent) => {
+    if (knowledgeBaseFullscreen) return;
     dragStateRef.current = { dragging: true, startX: e.clientX, startWidth: sidebarWidth };
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
@@ -462,7 +466,6 @@ export default function AdminDashboard() {
     showToast(`Removed "${node.name}"`);
   };
 
-  // NEW: delete environment (and all nested envs/items)
   const removeEnvironment = (envId: string) => {
     const env = findEnvById(environments, envId);
     const label = env?.name ?? "environment";
@@ -745,7 +748,6 @@ export default function AdminDashboard() {
             >
               <span className="text-yellow-500">{node.isOpen ? "▾" : "▸"}</span>
               <span className="text-yellow-400">📁</span>
-              {/* FIX: do not aggressively truncate; allow horizontal scroll */}
               <span className="whitespace-nowrap">{node.name}</span>
             </button>
 
@@ -787,7 +789,6 @@ export default function AdminDashboard() {
         className="flex items-center justify-between gap-3 bg-white/5 rounded-xl px-3 py-3"
         style={{ marginLeft: 10 + indent }}
       >
-        {/* FIX: no aggressive truncation; allow horizontal scroll */}
         <div className="text-white/90 flex items-center gap-2 min-w-0">
           <span className="text-white/70">📄</span>
           <span className="whitespace-nowrap">{node.name}</span>
@@ -850,7 +851,6 @@ export default function AdminDashboard() {
       <div key={env.id} className="w-full">
         <div
           className="inline-block align-top bg-white/5 rounded-xl px-3 py-3 relative"
-          // FIX: allow env row to expand as wide as needed; sidebar already has overflow-x-auto
           style={{
             borderLeft: `4px solid ${env.color}`,
             width: "max-content",
@@ -885,7 +885,6 @@ export default function AdminDashboard() {
               style={{ paddingLeft: 10 + gutterWidth + 6 }}
             >
               <span className="text-yellow-500">{env.isOpen ? "▾" : "▸"}</span>
-              {/* FIX: do not truncate env name; allow horizontal scroll */}
               <span className="font-medium whitespace-nowrap">{env.name}</span>
 
               {env.assignedUsers.length > 0 && (
@@ -936,7 +935,6 @@ export default function AdminDashboard() {
                 <span className="text-yellow-500 text-lg font-bold">⤴</span>
               </button>
 
-              {/* NEW: delete environment */}
               <button
                 type="button"
                 onClick={() => removeEnvironment(env.id)}
@@ -963,7 +961,8 @@ export default function AdminDashboard() {
     );
   };
 
-  const headerCompact = sidebarWidth <= 420;
+  const effectiveSidebarWidth = knowledgeBaseFullscreen ? MAX_SIDEBAR : sidebarWidth;
+  const headerCompact = effectiveSidebarWidth <= 420;
 
   return (
     <div className="h-screen bg-[#1c2237] p-6 text-white">
@@ -985,10 +984,10 @@ export default function AdminDashboard() {
 
         {/* Content */}
         <div className="flex gap-6 flex-1 min-h-0">
-          {/* Knowledge Base (Resizable) */}
+          {/* Knowledge Base (Resizable / Fullscreen Toggle) */}
           <div
             className="flex flex-col bg-white/5 rounded-xl min-h-0 relative overflow-hidden"
-            style={{ width: sidebarWidth }}
+            style={{ width: knowledgeBaseFullscreen ? "100%" : sidebarWidth }}
           >
             {/* Sticky header */}
             <div className="sticky top-0 z-10 bg-[#2a3153] border-b border-white/10 rounded-t-xl">
@@ -1021,6 +1020,15 @@ export default function AdminDashboard() {
                         onClick={handleAddEnvironment}
                       >
                         Add environment
+                      </button>
+
+                      {/* NEW: fullscreen toggle */}
+                      <button
+                        type="button"
+                        className="bg-white/5 hover:bg-white/10 text-white px-4 py-2 rounded-lg text-sm font-semibold border border-white/10"
+                        onClick={() => setKnowledgeBaseFullscreen((prev) => !prev)}
+                      >
+                        {knowledgeBaseFullscreen ? "Exit full screen" : "Full screen"}
                       </button>
                     </div>
 
@@ -1063,23 +1071,27 @@ export default function AdminDashboard() {
             </div>
 
             {/* Resize handle */}
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              onMouseDown={startResize}
-              className="absolute top-0 right-0 h-full w-2 cursor-col-resize"
-              title="Drag to resize"
-              style={{
-                background:
-                  "linear-gradient(to right, rgba(255,255,255,0.0), rgba(255,255,255,0.10), rgba(255,255,255,0.0))",
-              }}
-            />
+            {!knowledgeBaseFullscreen && (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                onMouseDown={startResize}
+                className="absolute top-0 right-0 h-full w-2 cursor-col-resize"
+                title="Drag to resize"
+                style={{
+                  background:
+                    "linear-gradient(to right, rgba(255,255,255,0.0), rgba(255,255,255,0.10), rgba(255,255,255,0.0))",
+                }}
+              />
+            )}
           </div>
 
           {/* Chat */}
-          <div className="flex-1 bg-white/5 rounded-xl p-6 min-h-0 overflow-hidden">
-            <ChatPanel />
-          </div>
+          {!knowledgeBaseFullscreen && (
+            <div className="flex-1 bg-white/5 rounded-xl p-6 min-h-0 overflow-hidden">
+              <ChatPanel />
+            </div>
+          )}
         </div>
       </div>
 
