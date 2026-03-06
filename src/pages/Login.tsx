@@ -11,7 +11,11 @@ import nathanImg from "../assets/team/nathan.jpg";
 import salehImg from "../assets/team/saleh.jpg";
 import sandyImg from "../assets/team/sandy.jpg";
 
-type ViewMode = "login" | "team";
+import posterTwo from "../assets/poster/2.jpg";
+import posterActual from "../assets/poster/Actual.jpg";
+import posterConcept from "../assets/poster/concept.jpg";
+
+type ViewMode = "login" | "team" | "poster";
 
 type TeamMember = {
   name: string;
@@ -68,6 +72,21 @@ const TEAM_MEMBERS: TeamMember[] = [
     role: "Design Team Member",
     image: esmeImg,
     linkedin: "https://www.linkedin.com/in/esmemirchandani/",
+  },
+];
+
+const POSTERS = [
+  {
+    title: "Actual Poster",
+    image: posterActual,
+  },
+  {
+    title: "Poster Version 2",
+    image: posterTwo,
+  },
+  {
+    title: "Concept Poster",
+    image: posterConcept,
   },
 ];
 
@@ -128,6 +147,10 @@ export default function Login() {
     setView("team");
   };
 
+  const goToPoster = () => {
+    setView("poster");
+  };
+
   return (
     <div className="ai-page-bg flex items-center justify-center p-6">
       <div className="ai-card w-full max-w-6xl p-8">
@@ -157,13 +180,20 @@ export default function Login() {
             >
               Meet the team
             </button>
+
+            <button
+              type="button"
+              onClick={goToPoster}
+              className="text-sm text-ai-gold hover:underline"
+            >
+              Poster
+            </button>
           </div>
         </div>
 
         {/* LOGIN VIEW */}
         {view === "login" && (
           <>
-            {/* STEP 1 — ROLE SELECTION */}
             {!role && (
               <>
                 <h1 className="text-3xl font-bold mt-8">Login</h1>
@@ -195,7 +225,6 @@ export default function Login() {
               </>
             )}
 
-            {/* STEP 2 — CREDENTIALS */}
             {role && (
               <>
                 <h1 className="text-2xl font-bold mt-8">
@@ -279,6 +308,46 @@ export default function Login() {
                   <div className="mt-4 text-lg font-semibold">{member.name}</div>
                   <div className="mt-1 text-sm text-ai-muted">{member.role}</div>
                 </a>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* POSTER VIEW */}
+        {view === "poster" && (
+          <>
+            <div className="mt-8 flex items-start justify-between gap-4">
+              <div>
+                <h1 className="text-3xl font-bold">Poster</h1>
+                <p className="text-ai-muted mt-2">
+                  Project poster gallery.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={goToLoginHome}
+                className="ai-btn-secondary shrink-0"
+              >
+                ← Back to login
+              </button>
+            </div>
+
+            <div className="mt-10 space-y-8">
+              {POSTERS.map((poster) => (
+                <div
+                  key={poster.title}
+                  className="bg-white/5 border border-white/10 rounded-2xl p-4"
+                >
+                  <div className="text-lg font-semibold mb-4">{poster.title}</div>
+                  <div className="rounded-xl overflow-hidden border border-white/10">
+                    <img
+                      src={poster.image}
+                      alt={poster.title}
+                      className="w-full h-auto block"
+                    />
+                  </div>
+                </div>
               ))}
             </div>
           </>
