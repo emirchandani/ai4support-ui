@@ -11,9 +11,7 @@ import nathanImg from "../assets/team/nathan.jpg";
 import salehImg from "../assets/team/saleh.jpg";
 import sandyImg from "../assets/team/sandy.jpg";
 
-import posterTwo from "../assets/poster/2.jpg";
 import posterActual from "../assets/poster/Actual.jpg";
-import posterConcept from "../assets/poster/concept.jpg";
 
 type ViewMode = "login" | "team" | "poster";
 
@@ -79,14 +77,6 @@ const POSTERS = [
   {
     title: "Actual Poster",
     image: posterActual,
-  },
-  {
-    title: "Poster Version 2",
-    image: posterTwo,
-  },
-  {
-    title: "Concept Poster",
-    image: posterConcept,
   },
 ];
 
@@ -319,9 +309,7 @@ export default function Login() {
             <div className="mt-8 flex items-start justify-between gap-4">
               <div>
                 <h1 className="text-3xl font-bold">Poster</h1>
-                <p className="text-ai-muted mt-2">
-                  Project poster gallery.
-                </p>
+                <p className="text-ai-muted mt-2">Project poster.</p>
               </div>
 
               <button
